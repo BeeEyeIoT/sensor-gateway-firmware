@@ -87,12 +87,14 @@ static void process_measures(const struct measure *measures, uint8_t count) {
             default:
                 display_printf("Unsupported measure type %d\n", current->type);
         }
+    }
 
-        int ret = influx_post_measure(current);
-        if (ret) {
-            LOG_ERR("Posting to InfluxDB Failed: %d", ret);
-            display_printf("Posting failed: %d\n", ret);
-        }
+    int ret = influx_post_measures(measures, count);
+    if (ret) {
+        LOG_ERR("Posting to InfluxDB Failed: %d", ret);
+        display_printf("Posting failed: %d\n", ret);
+    } else {
+        LOG_INF("Posted to InfluxDB");
     }
 }
 

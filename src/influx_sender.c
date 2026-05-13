@@ -17,8 +17,7 @@ LOG_MODULE_DECLARE(app, LOG_LEVEL_DBG);
 
 #define RECV_BUF_SIZE 1024
 
-static int build_influx_line(char *buf, size_t len, const struct measure *measure)
-{
+static int build_influx_line(char *buf, size_t len, const struct measure *measure) {
   char saddr[17];
   snprintf(saddr, sizeof(saddr), "%02x%02x%02x%02x%02x%02x%02x%02x", 
     measure->sensor_id[0],
@@ -42,14 +41,14 @@ static int build_influx_line(char *buf, size_t len, const struct measure *measur
   case MEASURE_TYPE_WEIGHT:
     return snprintf(buf, len, "weight,sensor=%s value=%f", saddr, (double)measure->data.w.weight); 
   default:
+	LOG_WRN("Unknown measure type %d", measure->type);
     return -EINVAL;
   }
 
   return 0; // supress warning (doesn't reach here)
 }
 
-static int parse_http_url(const char *url, char *host, size_t host_len, uint16_t *port, const char **path)
-{
+static int parse_http_url(const char *url, char *host, size_t host_len, uint16_t *port, const char **path) {
 	const char *p;
 	const char *host_start;
 	const char *host_end;
@@ -107,8 +106,7 @@ static int parse_http_url(const char *url, char *host, size_t host_len, uint16_t
 	return 0;
 }
 
-static int resolve_ipv4(const char *host, uint16_t port, struct sockaddr_in *out_addr)
-{
+static int resolve_ipv4(const char *host, uint16_t port, struct sockaddr_in *out_addr) {
 	struct zsock_addrinfo hints;
 	struct zsock_addrinfo *res = NULL;
 	int ret;
@@ -146,23 +144,18 @@ static int resolve_ipv4(const char *host, uint16_t port, struct sockaddr_in *out
 
 char recv_buf[RECV_BUF_SIZE + 1];
 static uint16_t http_status_code;
-static int response_cb(struct http_response *rsp, enum http_final_call final_data, void *user_data)
-{
-	if (final_data == HTTP_DATA_MORE) {
-		LOG_DBG("Partial data received (%zd bytes)", rsp->data_len);
-	} else if (final_data == HTTP_DATA_FINAL) {
-		LOG_DBG("All the data received (%zd bytes)", rsp->data_len);
+K_SEM_DEFINE(http_response_sem, 0, 1);
+static int response_cb(struct http_response *rsp, enum http_final_call final_data, void *user_data) {
+	if (final_data == HTTP_DATA_FINAL) {
+		k_sem_give(&http_response_sem);
 	}
-	LOG_DBG("Response to %s", (const char *)user_data);
-	LOG_DBG("Response status %s", rsp->http_status);
 
 	http_status_code = rsp->http_status_code;
 
 	return 0;
 }
 
-static int build_basic_auth(char *out, size_t out_len, const char *user, const char *pass)
-{
+static int build_basic_auth(char *out, size_t out_len, const char *user, const char *pass) {
 	char tmp[128];
 	size_t olen;
 
@@ -181,8 +174,7 @@ static int build_basic_auth(char *out, size_t out_len, const char *user, const c
 }
 
 
-static int influx_post(const char *body)
-{
+static int influx_post(const char *body) {
 	struct http_request req = {0};
 	struct sockaddr_in addr = {0};
 	int sock;
@@ -218,8 +210,8 @@ static int influx_post(const char *body)
 	ret = zsock_connect(sock, (struct sockaddr *)&addr, sizeof(addr));
 	if (ret < 0) {
 		LOG_ERR("connect failed (%d)", errno);
-		zsock_close(sock);
-		return -errno;
+		ret = -errno;
+		goto close_and_exit;
 	}
 
 	// 4. Create HTTP POST reqiest
@@ -241,8 +233,7 @@ static int influx_post(const char *body)
 	ret = build_basic_auth(auth_b64, sizeof(auth_b64), app_config.influx_user, app_config.influx_pass);
 	if (ret < 0) {
 		LOG_ERR("auth build failed (%d)", ret);
-		zsock_close(sock);
-		return ret;
+		goto close_and_exit;
 	}
 
 	snprintf(auth_hdr, sizeof(auth_hdr), "Authorization: Basic %s\r\n", auth_b64);
@@ -257,41 +248,37 @@ static int influx_post(const char *body)
 
 	LOG_DBG("POST %s %d %s", host, port, path);
 	LOG_DBG("BODY %s", body);
+	k_sem_reset(&http_response_sem);
 	ret = http_client_req(sock, &req, 5000, NULL);
-	zsock_close(sock);
 
 	if (ret < 0) {
 		LOG_ERR("HTTP POST failed (%d)", ret);
-		return ret;
+		goto close_and_exit;
 	}
 
-	LOG_DBG("HTTP POST OK");
+	ret = k_sem_take(&http_response_sem, K_SECONDS(10));
 
-	if (http_status_code >= 200 && http_status_code < 300) {
-		return 0;
-	}
-
-	if (http_status_code == 401 || http_status_code == 403) {
-		return -EACCES;
-	}
-
-	if (http_status_code == 404) {
-		return -ENOENT;
-	}
-
-	if (http_status_code >= 400 && http_status_code < 500) {
-		return -EINVAL;
-	}
-
-	if (http_status_code >= 500) {
-		return -EIO;
-	}
-
-	return -EIO;
+	if (ret != 0) {
+		LOG_ERR("HTTP timeout");
+		ret = -ETIMEDOUT;
+	} else if (http_status_code >= 200 && http_status_code < 300) {
+		ret = 0;
+	} else if (http_status_code == 401 || http_status_code == 403) {
+		ret = -EACCES;
+	} else if (http_status_code == 404) {
+		ret = -ENOENT;
+	} else if (http_status_code >= 400 && http_status_code < 500) {
+		ret = -EINVAL;
+	} else {
+		ret = -EIO;
+	} 
+	
+close_and_exit:
+	zsock_close(sock);
+	return ret;
 }
 
-int influx_post_measure(const struct measure *m)
-{
+int influx_post_measure(const struct measure *m) {
 	char body[256];
 	int ret;
 
@@ -309,5 +296,44 @@ int influx_post_measure(const struct measure *m)
 	return ret;
 }
 
+int influx_post_measures(const struct measure *measures, size_t count) {
+	#define MEASURE_LINE_MAX_SIZE 256
+	char body[2048];
+	int ret;
+	int i = 0;
+	
+	while (i < count) {
+		size_t body_size = 0;
+		for (; i<count; ++i) {
+			// Stop and send if we don't have enough space in the buffer
+			if (body_size >= sizeof(body) - MEASURE_LINE_MAX_SIZE) {
+				break;
+			}
 
+			// Add a new line between metrics
+			if (body_size > 0) {
+				body[body_size] = '\n';
+				++body_size;
+			}
+		
+			// Format metric and append to body
+			ret = build_influx_line(body + body_size, MEASURE_LINE_MAX_SIZE, measures + i);
+			if (ret < 0) {
+				LOG_ERR("line build failed: %d", ret);
+				return ret;
+			} else if (ret >= MEASURE_LINE_MAX_SIZE) {
+				LOG_ERR("line too long");
+				return -ENOMEM;
+			}
+			body_size += ret;
+		}
 
+		ret = influx_post(body);
+		if (ret) {
+			LOG_ERR("posting metrics failed: %d", ret);
+			return ret;
+		}
+	}
+	
+	return 0;
+}
