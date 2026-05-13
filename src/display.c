@@ -18,7 +18,7 @@
 
 LOG_MODULE_DECLARE(app);
 #define MSG_SIZE 256
-K_MSGQ_DEFINE(ui_msgq, sizeof(char[MSG_SIZE]), 10, 4);
+K_MSGQ_DEFINE(ui_msgq, sizeof(char[MSG_SIZE]), 20, 4);
 
 
 #ifdef CONFIG_DISPLAY_LOG_BACKEND
@@ -254,7 +254,7 @@ static void ui_worker(void *arg1, void *arg2, void *arg3)
 
         if (updated) {
             const char *txt = lv_textarea_get_text(lvobj_textarea);
-            if (strlen(txt) > 1024 + 128) {
+            if (strlen(txt) > 1024 + 512 + 128) {
                 const char *keep = get_last_utf8_offset(txt, 128);
                 if (keep > txt) {
                     char tmp[1526];

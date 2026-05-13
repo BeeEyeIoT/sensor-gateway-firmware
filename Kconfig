@@ -3,3 +3,7 @@ source "Kconfig.zephyr"
 config DISPLAY_LOG_BACKEND
     bool "Enable display log backend"
     default n
+
+config DISPLAY_METRIC_DETAILS
+    bool "Display received metrics on the screen"
+    default n

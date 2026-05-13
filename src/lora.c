@@ -2,11 +2,14 @@
 #include "display.h"
 #include "messages.h"
 #include "influx_sender.h"
+#include "rtc_clock.h"
+#include "appconfig.h"
 
 #include <zephyr/logging/log.h>
 #include <zephyr/device.h>
 #include <zephyr/devicetree.h>
 #include <zephyr/drivers/lora.h>
+#include <zephyr/drivers/rtc.h>
 #include <errno.h>
 
 LOG_MODULE_DECLARE(app);
@@ -57,9 +60,10 @@ int lora_start(void) {
 }
 
 static void process_measures(const struct measure *measures, uint8_t count) {
+    char buffer[256];
     const struct measure *current = measures;
     for (int i=0; i<count; ++i, ++current) {
-        display_printf("%02X%02X%02X%02X%02X%02X%02X%02X ",
+        const size_t adsz = snprintf(buffer, sizeof(buffer), "%02X%02X%02X%02X%02X%02X%02X%02X ",
             current->sensor_id[0],
             current->sensor_id[1],
             current->sensor_id[2],
@@ -72,21 +76,30 @@ static void process_measures(const struct measure *measures, uint8_t count) {
 
         switch (current->type) {
             case MEASURE_TYPE_BATTERY:
-                display_printf("bat=%dmV\n", current->data.bat.mV);
+                snprintf(buffer + adsz, sizeof(buffer) - adsz, "bat=%dmV", current->data.bat.mV);
                 break;
             case MEASURE_TYPE_TEMPERATURE:
-                display_printf("t=%.1f\n", (double)current->data.th.tempC);
+                snprintf(buffer + adsz, sizeof(buffer) - adsz, "t=%.1f", (double)current->data.th.tempC);
                 break;
             case MEASURE_TYPE_TEMP_AND_HUMIDITY:
-                display_printf("t=%.1f, h=%.1f%%\n", 
+                snprintf(buffer + adsz, sizeof(buffer) - adsz, "t=%.1f, h=%.1f%%", 
                     (double)current->data.th.tempC, (double)current->data.th.hum);
                 break;
             case MEASURE_TYPE_WEIGHT:
-                display_printf("w=%.1f\n", (double)current->data.w.weight);
+                snprintf(buffer + adsz, sizeof(buffer) - adsz, "w=%.1f", (double)current->data.w.weight);
                 break;
             default:
-                display_printf("Unsupported measure type %d\n", current->type);
+                snprintf(buffer + adsz, sizeof(buffer) - adsz, "Unsupported measure type %d", current->type);
         }
+
+        LOG_INF("Received measure %s", buffer);
+        if (IS_ENABLED(CONFIG_DISPLAY_METRIC_DETAILS)) {
+            display_printf("%s\n", buffer);
+        }
+    }
+
+    if (!IS_ENABLED(CONFIG_DISPLAY_METRIC_DETAILS)) {
+        display_printf("Received %d measures\n", count);
     }
 
     int ret = influx_post_measures(measures, count);
@@ -118,8 +131,12 @@ static void lora_worker(void *arg1, void *arg2, void *arg3) {
         }
 
         buf[ret] = 0;
+        struct rtc_time tm = {};
 
-        display_printf("RX (%d bytes) RSSI=%d SNR=%d\n", ret, rssi, snr);
+        if(!rtc_get_time_eu_local(&tm, app_config.tz_offset)) {
+            display_printf("%02d:%02d:%02d LoRa receive\n", tm.tm_hour, tm.tm_min, tm.tm_sec);
+        }
+        display_printf("Payload=%db RSSI=%d SNR=%d\n", ret, rssi, snr);
 
         const uint8_t payload_size = ret;
         const struct message_header *p_header = (const struct message_header*)buf;
