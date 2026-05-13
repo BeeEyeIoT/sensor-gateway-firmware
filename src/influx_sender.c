@@ -241,6 +241,7 @@ static int influx_post(const char *body)
 	ret = build_basic_auth(auth_b64, sizeof(auth_b64), app_config.influx_user, app_config.influx_pass);
 	if (ret < 0) {
 		LOG_ERR("auth build failed (%d)", ret);
+		zsock_close(sock);
 		return ret;
 	}
 
