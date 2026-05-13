@@ -13,6 +13,7 @@
 #include <zephyr/logging/log_output.h>
 
 #include <lvgl.h>
+#include <string.h>
 
 
 LOG_MODULE_DECLARE(app);
@@ -255,9 +256,14 @@ static void ui_worker(void *arg1, void *arg2, void *arg3)
             const char *txt = lv_textarea_get_text(lvobj_textarea);
             if (strlen(txt) > 1024 + 128) {
                 const char *keep = get_last_utf8_offset(txt, 128);
-                lv_textarea_set_text(lvobj_textarea, keep);
+                if (keep > txt) {
+                    char tmp[1526];
+                    strncpy(tmp, keep, sizeof(tmp) - 1);
+                    tmp[sizeof(tmp) - 1] = 0;
+                    lv_textarea_set_text(lvobj_textarea, tmp);
+                }
             }
-
+            lv_obj_update_layout(lvobj_textarea);
             lv_textarea_set_cursor_pos(lvobj_textarea, LV_TEXTAREA_CURSOR_LAST);
             lv_obj_scroll_to_y(lvobj_textarea, LV_COORD_MAX, LV_ANIM_OFF);
         }
